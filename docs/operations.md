@@ -28,6 +28,7 @@ capx evalq publish    リーダーボードを HF へ ◀──┘ <root>/result
 | `state/retrying/` | HF の一時的な障害でやり直している提出と、最初に失敗した時刻（§5） |
 | `state/ranking/` | 順位評価の提出の検査結果（§7）。`heads/` に、締切の前に最後に見た各チームの `main` と、締切の時点の `main` |
 | `weights/<owner>--<name>/<commit>/` | 提出物が `weights` で申告したモデル |
+| `recordings/<run_id>/<subset>/<sim>/` | 運営が確認するための試行の動画（下記「試行の録画」）。7日で消える |
 
 `runs/<run_id>/` は、同じチームの次の評価が始まるときに worker が消します。消すのは結果が出ている評価だけで、
 `results/` と `queue/` の記録は残ります。実行中の評価のほか、次のものも消さないので、運営が見てから手で消します。
@@ -181,8 +182,16 @@ sbatch -p <partition> --gres=gpu:1 scripts/evalq/test-in-image.sbatch tests/subm
 読み取り専用で mount します。repo と commit が同じなら複数の提出で共有します。
 
 - gated なリポジトリは主催者アカウントのトークン（`CAPX_HF_TOKEN`）で取得します。
-  主催者アカウントにアクセス権が無ければ却下になるので、`declares gated weights` という
-  WARNING が watcher のログに出たら、そのリポジトリのアクセス権を確認します。
+  主催者アカウントにアクセス権が無くても却下せず、その重みだけ取得しないまま、普通の順番で
+  キューに入れます。watcher は Slack に通知するので、HuggingFace で主催者アカウントから
+  そのリポジトリの利用条件に同意します。watcher は確認のたびに取得を試し、アクセスできるように
+  なったら取得します。
+- そのジョブが先頭まで来て worker が取ったときに重みがまだ無ければ、worker は重みが届くまで
+  待ちます。その worker の評価は止まるので、watcher は「評価キューが止まっています」と
+  Slack に通知し、止まっている間は1時間ごとにもう一度通知します。
+- Slack への通知は、Incoming Webhook の URL を `CAPX_SLACK_WEBHOOK_URL` に入れると届きます。
+  未設定なら watcher のログに WARNING として出るだけです。URL を知っていれば誰でも投稿できるので、
+  トークンと同じに扱います。
 - チームの org の外のリポジトリは、公開されているものだけを受け付けます。主催者のトークンは
   登録前のチームの org なども読めるので、非公開のものを取得させないためです。
 - 1提出の重みの合計の上限は `watcher.max_weights_gb`（既定 300、単位は GiB）です。
@@ -319,6 +328,7 @@ python3 -m json.tool ~/capx-queue/root/results/agent0-reference__smoke-1__*.json
 
 **トークン**: 主催者アカウントで期限の無い fine-grained token を発行し、`CAPX_HF_TOKEN` に入れます。
 未設定だと `hf auth login` の期限付きトークンを使い、切れると受け付けがエラーも出さずに止まります。
+gated な重みの通知を受けるには、`watch` を動かす環境に `CAPX_SLACK_WEBHOOK_URL` も入れます（[§2 の重み](#重み)）。
 
 **チームの登録**: チームは、このリポジトリに `teams/prelim/<team_id>.yaml` を足す pull request を送ります
 （ルールブック §6.1）。運営は、`repo` の org がそのチームのために用意した org であることを確かめてからマージします。
@@ -536,6 +546,23 @@ simulators:
 別ホストのソケットのパスは `-gpu-<gpu>` のぶん長くなります。AF_UNIX の 107 バイトを超えないかを、gateway を
 起動する前に一番大きいレーン番号のパスで確かめ、超えるときはその subset を `internal_error` で終えます。
 
+### 試行の録画
+
+提出物のポリシーが正しく動いているかを運営が確かめるために、gateway は1回の評価（subset）ごとに、
+シミュレータごとに `recordings.per_simulator`（既定 10）個の試行をランダムに選んで録画します。
+どの試行を選ぶかは gateway の起動時に OS の乱数で決め、提出物には伝えません。
+
+- バックエンドがシミュレーション時間 0.1 秒ごとにシーンのカメラを 256 px で撮り、試行の終わりに gateway が
+  受け取って `<root>/recordings/<run_id>/<subset>/<sim>/<task_id>__trial<k>__<success|fail>.mp4` に書きます。
+  ファイルはそのまま開いて見ます。
+- この場所は `runs/` の外にあり、mount するのは gateway のコンテナだけです。提出コンテナとバックエンドからは
+  見えません。`recordings/` は 0700 で作ります。HF にも結果にもアーカイブにも入りません。
+- worker は1時間ごとに、最後の書き込みから `recordings.keep_days`（既定 7）日たった評価の動画を消します。
+- 録画に失敗しても試行と採点には影響しません（gateway のログに残るだけです）。撮影の時間は、録画した試行の
+  ジョブの時間に含まれます。
+- 録画しないときは worker を `--no-recordings` で起動します（`supervise --no-recordings` は worker に渡します）。
+  設定で止めるときは `recordings.enabled: false` です。
+
 ## 7. 日常の操作
 
 ```bash
@@ -617,7 +644,7 @@ $CAPX_EVALQ_PYTHON -m capx.cli.main evalq queue-ranking --config <順位評価�
    - 共有ディレクトリ → `root`（計算ノードから見える場所）
    - ノードの GPU・メモリ → `slurm.mem`、`slurm.cpus_per_task`、`slurm.workers`
    - BEHAVIOR のホスト → 計算ノードからの ssh を確かめ直す
-4. **secrets を設定し直す**: `CAPX_HF_TOKEN`、`CAPX_HF_LEADERBOARD_TOKEN`。
+4. **secrets を設定し直す**: `CAPX_HF_TOKEN`、`CAPX_HF_LEADERBOARD_TOKEN`、`CAPX_SLACK_WEBHOOK_URL`。
 5. **再開する**: `verify-isolation.sbatch` を流し、`hub-status` で全チームが読めることを確かめ、
    参照実装を1本流してから `watch`・`supervise`・`publish` を動かします。公開ページに移す前と同じ
    履歴が出ていることを確かめてから、チームに再開を伝えます。
