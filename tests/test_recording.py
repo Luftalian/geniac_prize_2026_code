@@ -23,6 +23,7 @@ from capx.gateway.low_level import SimAdapter, encode_jpeg
 from capx.gateway.recording import Recorder, choose_episodes
 from capx.protocol import EnvClient, InProcessTransport
 from capx.protocol.actions import FrankaRawAction
+from socket_paths import fresh_socket_path
 from test_gateway import VALID_JOINTS, FakeEnv, FakeFactory, make_tasks
 
 
@@ -109,7 +110,7 @@ class RecordingFactory(FakeFactory):
 def _remote_gateway(
     factory: FakeFactory, recorder: Recorder
 ) -> tuple[EnvClient, Gateway, EnvBackendServer]:
-    server = EnvBackendServer(factory).start_background()
+    server = EnvBackendServer(factory, fresh_socket_path()).start_background()
     gateway = Gateway(
         make_tasks(),
         RemoteEnvFactory({"robosuite": [server.address]}),
