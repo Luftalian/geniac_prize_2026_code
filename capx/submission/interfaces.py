@@ -106,8 +106,7 @@ class SubmissionConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    gateway_host: str = "gateway"
-    gateway_port: int = 8000
+    gateway_socket: str = "/capx/run/gateway.sock"
     model: str
     server_url: ServerUrl
     temperature: float = 0.0

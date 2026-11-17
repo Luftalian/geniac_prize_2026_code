@@ -33,7 +33,8 @@ From: python:3.11-slim
         "pyyaml" \
         "pillow>=10" \
         "msgpack" \
-        "tyro"
+        "tyro" \
+        "imageio-ffmpeg"
     python -m pip install --no-cache-dir --no-deps -e .
 
     # The repo tree is group-only (0770) on the build host and everything lands
@@ -46,8 +47,6 @@ From: python:3.11-slim
     export PYTHONPATH=/workspace/capx
     export CAPX_MODE=official
     export CAPX_TASKPACK=taskpacks/original
-    export CAPX_HOST=127.0.0.1
-    export CAPX_PORT=8000
 
 %runscript
     cd /workspace/capx
