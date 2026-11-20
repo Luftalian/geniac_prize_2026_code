@@ -480,7 +480,7 @@ simulators:
   robosuite: {image: singularity/images/capx-env-robosuite.sif, max_lanes: 32}
   libero: {image: singularity/images/capx-env-libero.sif, max_lanes: 32}
   behavior:
-    max_lanes: 8                     # 1 レーン約 9 GiB。96 GB の GPU 1枚ならこれが上限
+    max_lanes: 4                     # ルールブック §4.4 の上限。1 レーン約 13 GB
     remote:
       host: <behavior-host>          # 計算ノードの ssh config での名前
       image: capx-env-behavior:local
@@ -491,9 +491,9 @@ simulators:
 ```
 
 コンテナは `--network none` で作り（`docker create`、`docker start -a`）、終わると worker が `docker rm -f` で消します。
-レーンごとに1コンテナが同じ GPU に載ります。1つあたり GPU メモリを約 9 GiB、ホストのメモリを約 5 GiB 使い、
-準備ができるまで約 3〜4 分かかります（RTX PRO 6000 Blackwell で測定）。96 GB の GPU 1枚に載るのは8レーン
-（約 72 GiB）までなので、`max_lanes` は 8 です。ログは `runs/.../<subset>/` の `env-behavior-<lane>.log`（コンテナの出力）と
+レーンごとに1コンテナが同じ GPU に載ります。1つあたり GPU メモリを約 13 GB、ホストのメモリを約 5 GiB 使い、
+準備ができるまで約 3〜4 分かかります（RTX PRO 6000 Blackwell で測定）。96 GB の GPU 1枚にはメモリの上では約7レーン
+載りますが、`max_lanes` はルールブック §4.4 の上限に合わせて 4 です。レーンは CPU も多く使うので、1 レーンあたり約 10 vCPU を目安にします。ログは `runs/.../<subset>/` の `env-behavior-<lane>.log`（コンテナの出力）と
 `forward-behavior-<lane>.log`（ソケット転送）です。最初のエピソードは環境の構築に数分かかります。
 
 **GPU は一度に1つの評価だけが使います**: 2つの評価の BEHAVIOR は1枚の GPU に載りません。
@@ -528,7 +528,7 @@ simulators:
 - `remote` のシミュレータを使う subset があるキューは `slurm.workers: 1` にします。2本目の worker は待つだけなので、
   2以上は設定の検証で落ちます。`simulators` を書かない subset は、パックに BEHAVIOR のタスクが無くても使うものとして
   数えます（設定を読むときにはパックを見ないため）。
-- 評価を動かしている間は、その GPU をほかの人の処理に使わせません。ほかのプロセスがメモリを使うと8レーンが載りません。
+- 評価を動かしている間は、その GPU をほかの人の処理に使わせません。ほかのプロセスが GPU のメモリや CPU を使うと、レーンが載らなかったり遅くなったりします。
 
 待っている間、worker ログには10分に1回 `not claiming jobs until the remote GPU is free: <理由>` が出ます。
 空くと `the remote GPU is free again` が出て、ジョブを取り始めます。評価中にロックの ssh が切れると
