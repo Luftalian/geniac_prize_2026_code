@@ -13,6 +13,10 @@ The GPU of a remote simulator serves one evaluation at a time. A worker whose su
 may use one claims a job only once it holds that GPU's lease, and keeps it until the job
 is published or put back. While another worker, of this queue or another, holds it, or
 its host does not answer, the worker claims nothing.
+
+A claimed job whose declared weights are not on disk yet is held, not failed: the
+watcher fetches a gated repo once the organizer account is granted access, and the job
+keeps its place in the queue meanwhile.
 """
 
 from __future__ import annotations
@@ -27,12 +31,13 @@ from types import FrameType
 
 from capx.evalqueue.config import QueueConfig
 from capx.evalqueue.deadline import close_round, past_deadline
-from capx.evalqueue.models import ErrorCode, RunResult
+from capx.evalqueue.models import ErrorCode, QueueJob, RunResult
 from capx.evalqueue.queue import ClaimedJob, FileQueue
+from capx.evalqueue.recordings import prune_recordings
 from capx.evalqueue.runner import EvalRunner, Interrupted, LeaseLost
 from capx.evalqueue.scratch import prune_runs
 from capx.evalqueue.store import EvalStore, run_id_for, utcnow
-from capx.evalqueue.weights import prune_weights
+from capx.evalqueue.weights import describe_mount, prune_weights
 
 _logger = logging.getLogger(__name__)
 
@@ -45,8 +50,11 @@ MAX_ATTEMPTS = 3
 """Runs a job may start that end with their worker gone. Past that it fails as
 ``internal_error`` rather than taking down one worker after another."""
 
+PRUNE_RECORDINGS_S = 3600.0
+"""How often the worker looks for recordings past ``recordings.keep_days``."""
+
 WAIT_WARNING_S = 600.0
-"""How often a worker that waits for a remote GPU's lease says so again."""
+"""How often a worker that waits for a remote GPU's lease or for weights says so again."""
 
 
 def default_worker_id() -> str:
@@ -72,6 +80,7 @@ class EvalWorker:
         self._stopping = False
         self._waiting_for_gpu = False
         self._next_wait_warning = 0.0
+        self._next_recordings_prune = 0.0
 
     def install_signal_handlers(self) -> None:
         def _handler(signum: int, _frame: FrameType | None) -> None:
@@ -94,6 +103,7 @@ class EvalWorker:
         completed = 0
         while not self._stopping and (max_jobs is None or completed < max_jobs):
             self._recover()
+            self._prune_recordings()
             if past_deadline(self._config):
                 close_round(self._store, self._queue)
                 time.sleep(self._config.watcher.poll_interval_s)
@@ -139,6 +149,7 @@ class EvalWorker:
         try:
             # With the heartbeat going: deleting a large tree can outlast a stale claim.
             self._prune_runs(job.team_id)
+            self._wait_for_weights(job)
             result = self._runner.run(job, run_id)
         except LeaseLost as exc:
             lost = exc
@@ -198,6 +209,26 @@ class EvalWorker:
         self._waiting_for_gpu = busy is not None
         return busy is None
 
+    def _wait_for_weights(self, job: QueueJob) -> None:
+        """Raises :class:`Interrupted` if the worker is stopped meanwhile."""
+        next_warning = 0.0
+        while missing := [
+            describe_mount(mount)
+            for mount in job.weights
+            if not self._store.weights_dir(mount).is_dir()
+        ]:
+            if self._stopping:
+                raise Interrupted()
+            if time.monotonic() >= next_warning:
+                _logger.warning(
+                    "%s waits for weights %s; the watcher fetches them once the organizer "
+                    "account has access",
+                    job.job_id,
+                    ", ".join(missing),
+                )
+                next_warning = time.monotonic() + WAIT_WARNING_S
+            time.sleep(self._config.watcher.poll_interval_s)
+
     def _prune_runs(self, team_id: str) -> None:
         try:
             removed = prune_runs(self._store, team_id)
@@ -206,6 +237,18 @@ class EvalWorker:
             return
         if removed:
             _logger.info("removed the directories of earlier runs: %s", removed)
+
+    def _prune_recordings(self) -> None:
+        if time.monotonic() < self._next_recordings_prune:
+            return
+        self._next_recordings_prune = time.monotonic() + PRUNE_RECORDINGS_S
+        try:
+            removed = prune_recordings(self._store, self._config.recordings.keep_days)
+        except Exception:
+            _logger.exception("removing old recordings failed")
+            return
+        if removed:
+            _logger.info("removed the recordings of runs: %s", removed)
 
     def _recover(self) -> None:
         recovered = self._queue.recover_claims(self.worker_id, STALE_CLAIM_S)

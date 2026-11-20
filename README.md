@@ -52,14 +52,17 @@ docker compose up --build
 
 ```bash
 # ターミナル1: シミュレータのバックエンド
-CAPX_SIMULATOR=robosuite CAPX_BACKEND_PORT=8100 python docker/serve_env_backend.py
+CAPX_SIMULATOR=robosuite CAPX_BACKEND_UNIX=$HOME/.capx/sock/robosuite.sock \
+    python docker/serve_env_backend.py
 
 # ターミナル2: gateway と評価ループ（シミュレータは import しない）
 python -m capx.cli.eval --taskpack taskpacks/original --mode dev \
-    --simulators robosuite --backend robosuite=127.0.0.1:8100
+    --simulators robosuite --backend robosuite=unix:$HOME/.capx/sock/robosuite.sock
 ```
 
-複数のシミュレータを使うときは、`--backend robosuite=127.0.0.1:8100 libero=127.0.0.1:8200` のように1つの `--backend` の後に並べます。LIBERO のバックエンドは専用の venv（`.venv-libero`）で動かします。BEHAVIOR は [docs/behavior-tasks.md](docs/behavior-tasks.md) を見てください。
+複数のシミュレータを使うときは、`--backend robosuite=unix:/path/robosuite.sock libero=unix:/path/libero.sock` のように1つの `--backend` の後に並べます。LIBERO のバックエンドは専用の venv（`.venv-libero`）で動かします。BEHAVIOR は [docs/behavior-tasks.md](docs/behavior-tasks.md) を見てください。
+
+gateway とバックエンドは Unix ソケットでしか待ち受けません。計算ノードは他のチームと共有されていて、ポートで待ち受けると他のチームのジョブからも接続できるためです。ソケットは自分だけが入れるディレクトリ（`$HOME` の下など、権限 `700`）に置き、`/tmp` の直下には置かないでください。ディレクトリやソケットに `chmod 777` などで他のユーザーの権限を付けないでください。
 
 ### 参照実装（CaP-Agent0）を動かす
 
@@ -69,7 +72,7 @@ CaP-Agent0（LLM の複数ターンループ、SAM3 と GraspNet による知覚
 PYTHONPATH=. python -m capx.submission.run --config-path env_configs/gateway/runner.yaml
 ```
 
-gateway には `CAPX_ENV_SOCKET` のソケット、なければ `CAPX_ENV_HOST`・`CAPX_ENV_PORT`（既定は `gateway:8000`）で接続します。タスクごとの設定（プロンプト、使う API）は `env_configs/gateway/*.yaml` にあり、`task_map` で選ばれます。必要なものは torch（CPU で可）、jax と pyroki、そして設定が参照するサーバー（vLLM、SAM3、GraspNet、PyRoKi、両腕のタスクでは OWL-ViT と SAM2）です。
+gateway には `CAPX_ENV_SOCKET` のソケット、なければ設定の `gateway_socket`（既定は `/capx/run/gateway.sock`）で接続します。タスクごとの設定（プロンプト、使う API）は `env_configs/gateway/*.yaml` にあり、`task_map` で選ばれます。必要なものは torch（CPU で可）、jax と pyroki、そして設定が参照するサーバー（vLLM、SAM3、GraspNet、PyRoKi、両腕のタスクでは OWL-ViT と SAM2）です。
 
 ### 自分のポリシーを書く
 
@@ -97,6 +100,10 @@ robot.goto_pose(target_pose, ik=my_ik_solver)
 - **Franka の関節は、観測では8次元、行動では7次元です。** `proprio.joint_pos` は関節7とグリッパ1の `(8,)` ですが、`FrankaRawAction.joints` は `(7,)` です。
 - **`mujoco==3.5.0` を使ってください。** 3.10 以上では robosuite が壊れ、`env_crash` になります。
 - **LIBERO は専用の venv（`.venv-libero`）が必要です。** 互換性のない robosuite を含むためです。必要なのはバックエンドのプロセスだけです。
+- **モデルやツールのサーバーは Unix ソケットだけで待ち受けます。** 計算ノードは他のチームと共有しているので、127.0.0.1 のポートにも他のチームのジョブから接続できます。そのため vLLM、SAM3、GraspNet、PyRoKi などのサーバーは TCP のポートを開かず、`CAPX_SOCKET_DIR`（既定は `~/.capx/sockets`）の中のソケット（`model.sock`、`sam3.sock` など）で待ち受けます。
+  - クライアントの URL は `http+unix://<ソケット>/<パス>` の形です（例: `--server-url http+unix://model.sock/v1/chat/completions`、`CAPX_MOLMO_URL=http+unix://model.sock/v1`）。ソケット名だけなら `CAPX_SOCKET_DIR` の中を指し、別の場所は `/` を `%2F` にした絶対パスで書きます。`http://127.0.0.1:...` は受け付けません。外部の API には `https://` を使います。
+  - タスクの設定の `api_servers` では、`port` と `host` の代わりに `socket: sam3.sock` のように書きます。
+  - ソケットのディレクトリは、自分だけが入れる 0700 にしてください（`$HOME` の下など）。`/tmp` の直下には置かず、`chmod 777` などで他のユーザーに開けないでください。サーバーは、他のユーザーが入れるディレクトリでは起動しません。
 
 ---
 
