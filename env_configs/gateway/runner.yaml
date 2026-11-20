@@ -14,7 +14,7 @@ concurrency: 16
 # it can start, and BEHAVIOR's trials go out first, so no lane sits waiting for a
 # backend while there is other work.
 simulator_lanes:
-  behavior: 8
+  behavior: 4
 output_dir: outputs/gateway_submission
 
 # The three things README calls CaP-Agent0: multi-turn visual differencing, the
